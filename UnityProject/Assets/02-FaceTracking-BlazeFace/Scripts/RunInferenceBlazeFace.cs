@@ -16,6 +16,10 @@ namespace MediaPipe.BlazeFace
         WebCamTexture _webcam;
         RenderTexture _buffer;
 
+        bool _useWebcam = !true;
+
+        public Texture2D _testFace;
+
         private Texture2D _image = null;
         [SerializeField, Range(0, 1)] float _threshold = 0.75f;
         [SerializeField] UI.RawImage _previewUI = null;
@@ -28,10 +32,8 @@ namespace MediaPipe.BlazeFace
         const int MaxDetection = 64;
 
         public ModelAsset _model;
-        public ComputeShader _preprocess;
         public ComputeShader _postprocess1;
         public ComputeShader _postprocess2;
-        ComputeBuffer _preBuffer;
         ComputeBuffer _post1Buffer;
         ComputeBuffer _post2Buffer;
         ComputeBuffer _countBuffer;
@@ -41,6 +43,9 @@ namespace MediaPipe.BlazeFace
         public GameObject webglWarning;
         public UI.Dropdown _cameraDropdown;
         public UI.Dropdown _backendDropdown;
+
+        static Ops ops;
+        ITensorAllocator allocator;
 
         //
         // Detection structure. The layout of this structure must be matched with
@@ -73,6 +78,7 @@ namespace MediaPipe.BlazeFace
 
         void Start()
         {
+            allocator = new TensorCachingAllocator();
             // Prepare camera
 #if PLATFORM_ANDROID
             Permission.RequestUserPermission(Permission.Camera);
@@ -92,10 +98,18 @@ namespace MediaPipe.BlazeFace
             webglWarning.SetActive(true);
 #endif
 
-            _webcam = new WebCamTexture(_deviceName, _resolution.x, _resolution.y);
-            _buffer = new RenderTexture(_resolution.x, _resolution.y, 0);
-            _webcam.requestedFPS = 30;
-            _webcam.Play();
+            if (_useWebcam)
+            {
+                _webcam = new WebCamTexture(_deviceName, _resolution.x, _resolution.y);
+                _webcam.requestedFPS = 30;
+                _webcam.Play();
+                _buffer = new RenderTexture(_resolution.x, _resolution.y, 0);
+            }
+            else
+            {
+                _buffer = new RenderTexture(_resolution.x, _resolution.y, 0);
+                Graphics.Blit(_testFace, _buffer);
+            }
 
             Screen.orientation = ScreenOrientation.LandscapeLeft;
 
@@ -115,20 +129,23 @@ namespace MediaPipe.BlazeFace
 
         void Update()
         {
-            // Format video inpout
-            if (!_webcam.didUpdateThisFrame) return;
+            if (_useWebcam)
+            {
+                // Format video inpout
+                if (!_webcam.didUpdateThisFrame) return;
 
-            var aspect1 = (float)_webcam.width / _webcam.height;
-            var aspect2 = (float)_resolution.x / _resolution.y;
-            var gap = aspect2 / aspect1;
+                var aspect1 = (float)_webcam.width / _webcam.height;
+                var aspect2 = (float)_resolution.x / _resolution.y;
+                var gap = aspect2 / aspect1;
 
-            var vflip = _webcam.videoVerticallyMirrored;
-            var scale = new Vector2(gap, vflip ? -1 : 1);
-            var offset = new Vector2((1 - gap) / 2, vflip ? 1 : 0);
+                var vflip = _webcam.videoVerticallyMirrored;
+                var scale = new Vector2(gap, vflip ? -1 : 1);
+                var offset = new Vector2((1 - gap) / 2, vflip ? 1 : 0);
 
-            Graphics.Blit(_webcam, _buffer, scale, offset);
+                Graphics.Blit(_webcam, _buffer, scale, offset);
+            }
+
         }
-
         void LateUpdate()
         {
             // Webcam test: Run the detector every frame.
@@ -153,16 +170,19 @@ namespace MediaPipe.BlazeFace
             options.Add("GPUCompute");
 #endif
             //options.Add("PixelShader"); //not supported with this demo
-            //options.Add("CSharpBurst"); //not supported with this demo
+            //options.Add("CPU"); //not supported with this demo
             _backendDropdown.ClearOptions();
             _backendDropdown.AddOptions(options);
         }
 
         public void SwapCamera()
         {
-            _webcam.Stop();
-            _webcam.deviceName = _cameraDropdown.options[_cameraDropdown.value].text;
-            _webcam.Play();
+            if (_useWebcam)
+            {
+                _webcam.Stop();
+                _webcam.deviceName = _cameraDropdown.options[_cameraDropdown.value].text;
+                _webcam.Play();
+            }
         }
 
         public void ProcessImage(Texture image, float threshold = 0.75f)
@@ -173,8 +193,6 @@ namespace MediaPipe.BlazeFace
             var model = ModelLoader.Load(_model);
             _size = model.inputs[0].shape.ToTensorShape()[1]; // Input tensor width
 
-            _preBuffer = new ComputeBuffer(_size * _size * 3, sizeof(float));
-
             _post1Buffer = new ComputeBuffer
               (MaxDetection, Detection.Size, ComputeBufferType.Append);
 
@@ -183,43 +201,49 @@ namespace MediaPipe.BlazeFace
 
             _countBuffer = new ComputeBuffer
               (1, sizeof(uint), ComputeBufferType.Raw);
+            ops?.Dispose();
 
             if (_backendDropdown.options[_backendDropdown.value].text == "GPUCompute")
             {
                 _worker = WorkerFactory.CreateWorker(BackendType.GPUCompute, model);
+
+                ops = WorkerFactory.CreateOps(BackendType.GPUCompute, allocator);
             }
             else if (_backendDropdown.options[_backendDropdown.value].text == "PixelShader")
             {
                 _worker = WorkerFactory.CreateWorker(BackendType.GPUPixel, model);
+
+                ops = WorkerFactory.CreateOps(BackendType.GPUPixel, allocator);
             }
-            else if (_backendDropdown.options[_backendDropdown.value].text == "CSharpBurst")
+            else if (_backendDropdown.options[_backendDropdown.value].text == "CPU")
             {
                 _worker = WorkerFactory.CreateWorker(BackendType.CPU, model);
+
+                ops = WorkerFactory.CreateOps(BackendType.CPU, allocator);
             }
         }
+
+        
 
         void ExecuteML(Texture source, float threshold)
         {
             // Reset the compute buffer counters.
-            /*_post1Buffer.SetCounterValue(0);
+            _post1Buffer.SetCounterValue(0);
             _post2Buffer.SetCounterValue(0);
 
-            // Preprocessing
-            var pre = _preprocess;
-            pre.SetInt("_ImageSize", _size);
-            pre.SetTexture(0, "_Texture", source);
-            pre.SetBuffer(0, "_Tensor", _preBuffer);
-            pre.Dispatch(0, _size / 8, _size / 8, 1);*/
 
-            // Run the BlazeFace model.
-            //using var tensor = new TensorFloat(new TensorShape(1, _size, _size, 3), _preBuffer));
             var transform = new TextureTransform();
             transform.SetDimensions(_size, _size, 3);
             transform.SetTensorLayout(0, 3, 1, 2);
-            using var tensor = TextureConverter.ToTensor(source, transform);
+            using var image0 = TextureConverter.ToTensor(source, transform);
 
-            _worker.Execute(tensor);
+            // Pre-process the image to make input in range (-1..1)
+            using var image = ops.Mad(image0, 2f, -1f);
+            _worker.Execute(image);
             
+            //---- The rest of this gets the output and puts it into rendertextures to execute compute shaders on them
+            //-----We should be able to do the same thing using Sentis Tensors
+
             // Output tensors -> Temporary render textures
             var scores1RT = _worker.CopyOutputToTempRT("Identity", 1, 512);
             var scores2RT = _worker.CopyOutputToTempRT("Identity_1", 1, 384);
@@ -227,19 +251,8 @@ namespace MediaPipe.BlazeFace
             var boxes2RT = _worker.CopyOutputToTempRT("Identity_3", 16, 384);
 
             // 1st postprocess (bounding box aggregation)
-            var post1 = _postprocess1;
-            post1.SetFloat("_ImageSize", _size);
-            post1.SetFloat("_Threshold", threshold);
-
-            post1.SetTexture(0, "_Scores", scores1RT);
-            post1.SetTexture(0, "_Boxes", boxes1RT);
-            post1.SetBuffer(0, "_Output", _post1Buffer);
-            post1.Dispatch(0, 1, 1, 1);
-
-            post1.SetTexture(1, "_Scores", scores2RT);
-            post1.SetTexture(1, "_Boxes", boxes2RT);
-            post1.SetBuffer(1, "_Output", _post1Buffer);
-            post1.Dispatch(1, 1, 1, 1);
+            AggregateBoundingBoxes(scores1RT, boxes1RT,  0);
+            AggregateBoundingBoxes(scores2RT, boxes2RT,  1);
 
             // Release the temporary render textures.
             RenderTexture.ReleaseTemporary(scores1RT);
@@ -251,17 +264,32 @@ namespace MediaPipe.BlazeFace
             ComputeBuffer.CopyCount(_post1Buffer, _countBuffer, 0);
 
             // 2nd postprocess (overlap removal)
-            var post2 = _postprocess2;
-            post2.SetBuffer(0, "_Input", _post1Buffer);
-            post2.SetBuffer(0, "_Count", _countBuffer);
-            post2.SetBuffer(0, "_Output", _post2Buffer);
-            post2.Dispatch(0, 1, 1, 1);
+            RemoveOverlappingBoxes();
 
             // Retrieve the bounding box count after removal.
             ComputeBuffer.CopyCount(_post2Buffer, _countBuffer, 0);
 
             // Read cache invalidation
             _post2ReadCache = null;
+        }
+
+        void AggregateBoundingBoxes(RenderTexture scoresRT, RenderTexture boxesRT, int dispatch) {
+            var post1 = _postprocess1;
+            post1.SetFloat("_ImageSize", _size);
+            post1.SetFloat("_Threshold", _threshold);
+
+            post1.SetTexture(dispatch, "_Scores", scoresRT);
+            post1.SetTexture(dispatch, "_Boxes", boxesRT);
+            post1.SetBuffer(dispatch, "_Output", _post1Buffer);
+            post1.Dispatch(dispatch, 1, 1, 1);
+        }
+
+        void RemoveOverlappingBoxes() {
+            var post2 = _postprocess2;
+            post2.SetBuffer(0, "_Input", _post1Buffer);
+            post2.SetBuffer(0, "_Count", _countBuffer);
+            post2.SetBuffer(0, "_Output", _post2Buffer);
+            post2.Dispatch(0, 1, 1, 1);
         }
 
         void runInference(Texture input)
@@ -306,7 +334,7 @@ namespace MediaPipe.BlazeFace
 
         void OnDestroy()
         {
-            Destroy(_webcam);
+            if(_useWebcam) Destroy(_webcam);
             Destroy(_buffer);
             Dispose();
         }
@@ -316,8 +344,6 @@ namespace MediaPipe.BlazeFace
 
         void DeallocateObjects()
         {
-            _preBuffer?.Dispose();
-            _preBuffer = null;
 
             _post1Buffer?.Dispose();
             _post1Buffer = null;
@@ -346,12 +372,7 @@ namespace MediaPipe.BlazeFace
             var fmt = RenderTextureFormat.RFloat;
             var rt = RenderTexture.GetTemporary(w, h, 0, fmt);
             var output = worker.PeekOutput(name) as TensorFloat;
-            //Debug.Log("O=" + output.shape);
             var tensor = output.ShallowReshape(new TensorShape(1, 1, h, w)) as TensorFloat;
-            //var transform = new TextureTransform();
-            //transform.SetDimensions(w, h, 1);
-            //transform.SetTensorLayout(0, 2, 3, 1);
-            //var rt = TextureConverter.ToTexture(tensor, w, h, 1);
             TextureConverter.RenderToTexture(tensor, rt);
             return rt;
         }

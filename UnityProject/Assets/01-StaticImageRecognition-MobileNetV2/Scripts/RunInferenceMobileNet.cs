@@ -15,11 +15,10 @@ public class RunInferenceMobileNet : MonoBehaviour
     public ModelAsset srcModel;
     public TextAsset labelsAsset;
     public Text resultClassText;
-    public Material preprocessMaterial;
     public Dropdown backendDropdown;
     
-    private string inferenceBackend = "CSharpBurst";
-    //"ComputePrecompiled";//
+    private string inferenceBackend = "CPU";
+    //"GPUCompute";//
     private Model model;
     private IWorker engine;
     private Dictionary<string, Tensor> inputs = new Dictionary<string, Tensor>();
@@ -32,8 +31,6 @@ public class RunInferenceMobileNet : MonoBehaviour
     void Start()
     {
         allocator = new TensorCachingAllocator();
-        ops = WorkerFactory.CreateOps(Unity.Sentis.BackendType.GPUCompute, allocator);
-        Debug.Log("ops=" + ops);
 
         Application.targetFrameRate = 60;
         Screen.orientation = ScreenOrientation.LandscapeLeft;
@@ -52,22 +49,28 @@ public class RunInferenceMobileNet : MonoBehaviour
     {
         selectedImage = imageID;
         displayImage.texture = inputImage[selectedImage];
+        ops?.Dispose();
         
-        if (inferenceBackend == "CSharpBurst")
+        if (inferenceBackend == "CPU")
         {
             engine = WorkerFactory.CreateWorker(BackendType.CPU, model);
+            ops = WorkerFactory.CreateOps(BackendType.CPU, allocator);
         } 
-        else if (inferenceBackend == "ComputePrecompiled")
+        else if (inferenceBackend == "GPUCompute")
         {
             engine = WorkerFactory.CreateWorker(BackendType.GPUCompute, model);
+            ops = WorkerFactory.CreateOps(BackendType.GPUCompute, allocator);
         } 
         else if (inferenceBackend == "PixelShader")
         {
             engine = WorkerFactory.CreateWorker(BackendType.GPUPixel, model);
+            ops = WorkerFactory.CreateOps(BackendType.GPUPixel, allocator);
         }
 
         //preprocess image for input
-        var input =  TextureConverter.ToTensor(PrepareTextureForInput(inputImage[selectedImage]), 224, 224, 3);
+        using var input0 = TextureConverter.ToTensor(inputImage[selectedImage], 224, 224, 3);
+        using var input = Normalise(input0);
+        //using var input = TextureConverter.ToTensor( PrepareTextureForInput( inputImage[selectedImage]), 224, 224, 3);
         //execute neural net
         engine.Execute(input);
         //read output tensor
@@ -86,24 +89,25 @@ public class RunInferenceMobileNet : MonoBehaviour
         Resources.UnloadUnusedAssets();
     }
 
-    Texture PrepareTextureForInput(Texture2D src)
+    TensorFloat Normalise(TensorFloat image)
     {
-        RenderTexture.active = targetRT;
-        //normalization is applied in the NormalizeInput shader
-        Graphics.Blit(src, targetRT, preprocessMaterial);
-
-        var  result = new Texture2D(targetRT.width, targetRT.height, TextureFormat.RGBAHalf, false);
-        result.ReadPixels(new Rect(0,0, targetRT.width, targetRT.height), 0, 0);
-        result.Apply();
-        return result;
+        using var M = new TensorFloat(new TensorShape(1, 3, 1, 1), new float[]
+        {
+           1/0.229f, 1/0.224f, 1/0.225f
+        });
+        using var P = new TensorFloat(new TensorShape(1, 3, 1, 1), new float[]
+        {
+            0.485f, 0.456f, 0.406f
+        });
+        using var image2 = ops.Sub(image, P);
+        return ops.Mul(image2, M);
     }
-
     public void AddBackendOptions()
     {
         List<string> options = new List<string> ();
-        options.Add("CSharpBurst");
+        options.Add("CPU");
         #if !UNITY_WEBGL
-        options.Add("ComputePrecompiled");
+        options.Add("GPUCompute");
         #endif
         options.Add("PixelShader");
         backendDropdown.ClearOptions ();
@@ -113,13 +117,13 @@ public class RunInferenceMobileNet : MonoBehaviour
     public void SelectBackendAndExecuteML()
     {
         
-        if (backendDropdown.options[backendDropdown.value].text == "CSharpBurst")
+        if (backendDropdown.options[backendDropdown.value].text == "CPU")
         {
-            inferenceBackend = "CSharpBurst";
+            inferenceBackend = "CPU";
         }
-        else if (backendDropdown.options[backendDropdown.value].text == "ComputePrecompiled")
+        else if (backendDropdown.options[backendDropdown.value].text == "GPUCompute")
         {
-            inferenceBackend = "ComputePrecompiled";
+            inferenceBackend = "GPUCompute";
         }
         else if (backendDropdown.options[backendDropdown.value].text == "PixelShader")
         {

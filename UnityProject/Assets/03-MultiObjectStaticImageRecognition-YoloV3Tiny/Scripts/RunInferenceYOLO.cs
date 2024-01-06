@@ -18,6 +18,7 @@ public class RunInferenceYOLO : MonoBehaviour
     public Font font;
     public float confidenceThreshold = 0.25f;
     public float iouThreshold = 0.45f;
+    public Sprite boxTexture;
 
     private Model model;
     private IWorker engine;
@@ -80,7 +81,7 @@ public class RunInferenceYOLO : MonoBehaviour
         }
         displayImage.texture = inputImage[selectedImage];
         
-        if (inferenceBackend == "CSharpBurst")
+        if (inferenceBackend == "CPU")
         {
             engine = WorkerFactory.CreateWorker(BackendType.CPU, model);
         } 
@@ -94,14 +95,13 @@ public class RunInferenceYOLO : MonoBehaviour
         }
 
         //preprocess image for input
-        //var input = new TensorFloat((inputImage[imageID]), 3);
         using var input = TextureConverter.ToTensor(inputImage[imageID], inputImage[imageID].width, inputImage[imageID].height, 3);
-        Debug.Log(input.shape);
         engine.Execute(input);
         
         //read output tensors
         var output20 = engine.PeekOutput("016_convolutional") as TensorFloat; //016_convolutional = original output tensor name for 20x20 boundingBoxes
         var output40 = engine.PeekOutput("023_convolutional") as TensorFloat; ; //023_convolutional = original output tensor name for 40x40 boundingBoxes
+
 
         //this list is used to store the original model output data
         List<Box> outputBoxList = new List<Box>();
@@ -133,7 +133,7 @@ public class RunInferenceYOLO : MonoBehaviour
     public void AddBackendOptions()
     {
         List<string> options = new List<string> ();
-        options.Add("CSharpBurst");
+        options.Add("CPU");
         #if !UNITY_WEBGL
         options.Add("GPUCompute");
         #endif
@@ -144,9 +144,9 @@ public class RunInferenceYOLO : MonoBehaviour
     
     public void SelectBackendAndExecuteML()
     {
-        if (backendDropdown.options[backendDropdown.value].text == "CSharpBurst")
+        if (backendDropdown.options[backendDropdown.value].text == "CPU")
         {
-            inferenceBackend = "CSharpBurst";
+            inferenceBackend = "CPU";
         }
         else if (backendDropdown.options[backendDropdown.value].text == "GPUCompute")
         {
@@ -172,20 +172,21 @@ public class RunInferenceYOLO : MonoBehaviour
 
     public List<Box> DecodeYolo(List<Box> outputBoxList, TensorFloat output, int boxSections, int anchorMask )
     {
+        output.MakeReadable();
         for (int boundingBoxX = 0; boundingBoxX < boxSections; boundingBoxX++)
         {
             for (int boundingBoxY = 0; boundingBoxY < boxSections; boundingBoxY++)
             {
                 for (int anchor = 0; anchor < 3; anchor++)
                 {
-                    if (output[0, boundingBoxX, boundingBoxY, anchor * anchorBatchSize + 4] > confidenceThreshold)
+                    if (output[0, anchor * anchorBatchSize + 4, boundingBoxX, boundingBoxY] > confidenceThreshold)
                     {
                         //identify the best class
                         float bestValue = 0;
                         int bestIndex = 0;
                         for (int i = 0; i < amountOfClasses; i++)
                         {
-                            float value = output[0, boundingBoxX, boundingBoxY, anchor * anchorBatchSize + 5 + i];
+                            float value = output[0, anchor * anchorBatchSize + 5 + i, boundingBoxX, boundingBoxY];
                             if (value > bestValue )
                             {
                                 bestValue = value;
@@ -194,10 +195,10 @@ public class RunInferenceYOLO : MonoBehaviour
                         }
                         //Debug.Log(labels[bestIndex]);
                         Box tempBox;
-                        tempBox.x = output[0, boundingBoxX, boundingBoxY, anchor * anchorBatchSize];
-                        tempBox.y = output[0, boundingBoxX, boundingBoxY, anchor * anchorBatchSize + 1];
-                        tempBox.width = output[0, boundingBoxX, boundingBoxY, anchor * anchorBatchSize + 2];
-                        tempBox.height = output[0, boundingBoxX, boundingBoxY, anchor * anchorBatchSize + 3];
+                        tempBox.x = output[0, anchor * anchorBatchSize, boundingBoxX, boundingBoxY];
+                        tempBox.y = output[0, anchor * anchorBatchSize + 1, boundingBoxX, boundingBoxY];
+                        tempBox.width = output[0, anchor * anchorBatchSize + 2, boundingBoxX, boundingBoxY];
+                        tempBox.height = output[0, anchor * anchorBatchSize + 3, boundingBoxX, boundingBoxY];
                         tempBox.label = labels[bestIndex];
                         tempBox.anchorIndex = anchor + anchorMask;
                         tempBox.cellIndexY = boundingBoxX;
@@ -285,16 +286,24 @@ public class RunInferenceYOLO : MonoBehaviour
     public float Sigmoid(float value) {
         return 1.0f / (1.0f + (float) Math.Exp(-value));
     }
-    
+
+    int N = 0;
     public void DrawBox(PixelBox box)
     {
+        N++;
+        Color color = Color.HSVToRGB((N * 0.618f) % 1f, 1f, 1f);
         //add bounding box
         GameObject panel = new GameObject("ObjectBox");
         panel.AddComponent<CanvasRenderer>();
         Image img = panel.AddComponent<Image>();
-        img.color = new Color(0, 1, 1, 0.2f);
+        img.color = color;//new Color(0, 1, 1, 1f);
+        img.sprite  = boxTexture;
+        
+
         panel.transform.SetParent(displayLocation, false);
         panel.transform.localPosition = new Vector3(box.x, -box.y);
+
+
         RectTransform rt = panel.GetComponent<RectTransform>();
         rt.sizeDelta = new Vector2(box.width, box.height);
 
@@ -304,17 +313,20 @@ public class RunInferenceYOLO : MonoBehaviour
         Text txt = text.AddComponent<Text>();
         text.transform.SetParent(panel.transform, false);
         txt.text = box.label;
-        txt.color = new Color(1,0,0,1);
+        txt.color = color;// new Color(1,0,0,1);
         txt.fontSize = 40;
         txt.font = font;
         txt.horizontalOverflow = HorizontalWrapMode.Overflow;
         RectTransform rt2 = text.GetComponent<RectTransform>();
         rt2.offsetMin = new Vector2(20, rt2.offsetMin.y);
         rt2.offsetMax = new Vector2(0, rt2.offsetMax.y);
-        rt2.offsetMax = new Vector2(rt2.offsetMax.x, 0);
+        rt2.offsetMax = new Vector2(rt2.offsetMax.x, 30);
         rt2.offsetMin = new Vector2(rt2.offsetMin.x, 0);
         rt2.anchorMin = new Vector2(0,0);
         rt2.anchorMax = new Vector2(1, 1);
+
+        img.sprite = boxTexture;
+        img.type = Image.Type.Sliced;
     }
 
     public void ClearAnnotations()
