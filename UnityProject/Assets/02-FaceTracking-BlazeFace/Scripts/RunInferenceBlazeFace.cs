@@ -31,7 +31,7 @@ namespace MediaPipe.BlazeFace
         // MAX_DETECTION in Common.hlsl.
         const int MaxDetection = 64;
 
-        public ModelAsset _model;
+        public ModelAsset _modelAsset;
         public ComputeShader _postprocess1;
         public ComputeShader _postprocess2;
         ComputeBuffer _post1Buffer;
@@ -46,6 +46,8 @@ namespace MediaPipe.BlazeFace
 
         static Ops ops;
         ITensorAllocator allocator;
+
+        Model _model;
 
         //
         // Detection structure. The layout of this structure must be matched with
@@ -117,7 +119,8 @@ namespace MediaPipe.BlazeFace
             AddBackendOptions();
 
             //initialization
-            AllocateObjects();
+            SetupModel();
+            SetupEngine();
 
             // Marker population
             for (var i = 0; i < _markers.Length; i++)
@@ -169,8 +172,8 @@ namespace MediaPipe.BlazeFace
 #if !UNITY_WEBGL
             options.Add("GPUCompute");
 #endif
-            //options.Add("PixelShader"); //not supported with this demo
-            //options.Add("CPU"); //not supported with this demo
+            options.Add("PixelShader"); //not supported with this demo
+            options.Add("CPU"); //not supported with this demo
             _backendDropdown.ClearOptions();
             _backendDropdown.AddOptions(options);
         }
@@ -188,39 +191,47 @@ namespace MediaPipe.BlazeFace
         public void ProcessImage(Texture image, float threshold = 0.75f)
           => ExecuteML(image, threshold);
 
-        public void AllocateObjects()
+
+        void SetupModel()
         {
-            var model = ModelLoader.Load(_model);
-            _size = model.inputs[0].shape.ToTensorShape()[1]; // Input tensor width
+            _model = ModelLoader.Load(_modelAsset);
+            _size = _model.inputs[0].shape.ToTensorShape()[1]; // Input tensor width
 
-            _post1Buffer = new ComputeBuffer
-              (MaxDetection, Detection.Size, ComputeBufferType.Append);
+            _post1Buffer = new ComputeBuffer(MaxDetection, Detection.Size, ComputeBufferType.Append);
 
-            _post2Buffer = new ComputeBuffer
-              (MaxDetection, Detection.Size, ComputeBufferType.Append);
+            _post2Buffer = new ComputeBuffer(MaxDetection, Detection.Size, ComputeBufferType.Append);
 
-            _countBuffer = new ComputeBuffer
-              (1, sizeof(uint), ComputeBufferType.Raw);
+            _countBuffer = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Raw);
+        }
+        public void SetupEngine()
+        {
+
             ops?.Dispose();
+            _worker?.Dispose();
 
             if (_backendDropdown.options[_backendDropdown.value].text == "GPUCompute")
             {
-                _worker = WorkerFactory.CreateWorker(BackendType.GPUCompute, model);
+                _worker = WorkerFactory.CreateWorker(BackendType.GPUCompute, _model);
 
                 ops = WorkerFactory.CreateOps(BackendType.GPUCompute, allocator);
             }
             else if (_backendDropdown.options[_backendDropdown.value].text == "PixelShader")
             {
-                _worker = WorkerFactory.CreateWorker(BackendType.GPUPixel, model);
+                _worker = WorkerFactory.CreateWorker(BackendType.GPUPixel, _model);
 
                 ops = WorkerFactory.CreateOps(BackendType.GPUPixel, allocator);
             }
             else if (_backendDropdown.options[_backendDropdown.value].text == "CPU")
             {
-                _worker = WorkerFactory.CreateWorker(BackendType.CPU, model);
+                _worker = WorkerFactory.CreateWorker(BackendType.CPU, _model);
 
                 ops = WorkerFactory.CreateOps(BackendType.CPU, allocator);
             }
+            
+           /* _model.AddLayer(new Unity.Sentis.Layers.NonMaxSuppression("NM1", "Identity_2", "Identity"));
+            _model.AddLayer(new Unity.Sentis.Layers.NonMaxSuppression("NM2", "Identity_3", "Identity_1"));
+            _model.AddOutput("NM1");
+            _model.AddOutput("NM2");*/
         }
 
         
@@ -240,6 +251,9 @@ namespace MediaPipe.BlazeFace
             // Pre-process the image to make input in range (-1..1)
             using var image = ops.Mad(image0, 2f, -1f);
             _worker.Execute(image);
+
+            //var NM1 = _worker.PeekOutput("NM1") as TensorFloat;
+            //Debug.Log("NM1 shape=" + NM1.shape);
             
             //---- The rest of this gets the output and puts it into rendertextures to execute compute shaders on them
             //-----We should be able to do the same thing using Sentis Tensors
@@ -249,6 +263,8 @@ namespace MediaPipe.BlazeFace
             var scores2RT = _worker.CopyOutputToTempRT("Identity_1", 1, 384);
             var boxes1RT = _worker.CopyOutputToTempRT("Identity_2", 16, 512);
             var boxes2RT = _worker.CopyOutputToTempRT("Identity_3", 16, 384);
+
+            
 
             // 1st postprocess (bounding box aggregation)
             AggregateBoundingBoxes(scores1RT, boxes1RT,  0);
@@ -315,8 +331,7 @@ namespace MediaPipe.BlazeFace
             _previewUI.texture = input;
         }
 
-        public IEnumerable<Detection> Detections
-            => _post2ReadCache ?? UpdatePost2ReadCache();
+        public IEnumerable<Detection> Detections => _post2ReadCache ?? UpdatePost2ReadCache();
 
         Detection[] _post2ReadCache;
         int[] _countReadCache = new int[1];
@@ -368,7 +383,7 @@ namespace MediaPipe.BlazeFace
         // RenderTexture.ReleaseTemporary.
         //
         public static RenderTexture CopyOutputToTempRT(this IWorker worker, string name, int w, int h)
-        {
+        {          
             var fmt = RenderTextureFormat.RFloat;
             var rt = RenderTexture.GetTemporary(w, h, 0, fmt);
             var output = worker.PeekOutput(name) as TensorFloat;

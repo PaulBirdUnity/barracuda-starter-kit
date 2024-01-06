@@ -17,8 +17,7 @@ public class RunInferenceMobileNet : MonoBehaviour
     public Text resultClassText;
     public Dropdown backendDropdown;
     
-    private string inferenceBackend = "CPU";
-    //"GPUCompute";//
+    private string inferenceBackend = "GPUCompute";
     private Model model;
     private IWorker engine;
     private Dictionary<string, Tensor> inputs = new Dictionary<string, Tensor>();
@@ -45,32 +44,36 @@ public class RunInferenceMobileNet : MonoBehaviour
         SelectBackendAndExecuteML();
     }
 
-    public void ExecuteML(int imageID)
+    void SetupEngine()
     {
-        selectedImage = imageID;
-        displayImage.texture = inputImage[selectedImage];
         ops?.Dispose();
-        
+        engine?.Dispose();
+
         if (inferenceBackend == "CPU")
         {
             engine = WorkerFactory.CreateWorker(BackendType.CPU, model);
             ops = WorkerFactory.CreateOps(BackendType.CPU, allocator);
-        } 
+        }
         else if (inferenceBackend == "GPUCompute")
         {
             engine = WorkerFactory.CreateWorker(BackendType.GPUCompute, model);
             ops = WorkerFactory.CreateOps(BackendType.GPUCompute, allocator);
-        } 
+        }
         else if (inferenceBackend == "PixelShader")
         {
             engine = WorkerFactory.CreateWorker(BackendType.GPUPixel, model);
             ops = WorkerFactory.CreateOps(BackendType.GPUPixel, allocator);
         }
+    }
+
+    public void ExecuteML(int imageID)
+    {
+        selectedImage = imageID;
+        displayImage.texture = inputImage[selectedImage];
 
         //preprocess image for input
         using var input0 = TextureConverter.ToTensor(inputImage[selectedImage], 224, 224, 3);
         using var input = Normalise(input0);
-        //using var input = TextureConverter.ToTensor( PrepareTextureForInput( inputImage[selectedImage]), 224, 224, 3);
         //execute neural net
         engine.Execute(input);
         //read output tensor
@@ -84,8 +87,6 @@ public class RunInferenceMobileNet : MonoBehaviour
         var accuracy = output[res];
         resultClassText.text = $"{label} {Math.Round(accuracy*100f, 1)}﹪";
         //clean memory
-        input.Dispose();
-        engine.Dispose();
         Resources.UnloadUnusedAssets();
     }
 
@@ -129,6 +130,7 @@ public class RunInferenceMobileNet : MonoBehaviour
         {
             inferenceBackend = "PixelShader";
         }
+        SetupEngine();
         ExecuteML(selectedImage);
     }
     
@@ -138,7 +140,7 @@ public class RunInferenceMobileNet : MonoBehaviour
 
         foreach (var key in inputs.Keys)
         {
-            inputs[key].Dispose();
+            inputs[key]?.Dispose();
         }
 		
         inputs.Clear();

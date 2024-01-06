@@ -68,11 +68,34 @@ public class RunInferenceYOLO : MonoBehaviour
         labels = labelsAsset.text.Split('\n');
         //load model
         model = ModelLoader.Load(srcModel);
+
         SelectBackendAndExecuteML();
     }
 
+    System.Diagnostics.Stopwatch watch = new System.Diagnostics.Stopwatch();
+
+    void SetupEngine()
+    {
+        engine?.Dispose();
+        if (inferenceBackend == "CPU")
+        {
+            engine = WorkerFactory.CreateWorker(BackendType.CPU, model);
+        }
+        else if (inferenceBackend == "GPUCompute")
+        {
+            engine = WorkerFactory.CreateWorker(BackendType.GPUCompute, model);
+        }
+        else if (inferenceBackend == "PixelShader")
+        {
+            engine = WorkerFactory.CreateWorker(BackendType.GPUPixel, model);
+        }
+    }
+
+
     public void ExecuteML(int imageID)
     {
+        if (imageID == selectedImage) return; //could cause a bug if toggled on sent first
+        watch.Reset(); watch.Start();
         ClearAnnotations();
         selectedImage = imageID;
         if (inputImage[selectedImage].width != 640 || inputImage[selectedImage].height != 640)
@@ -81,27 +104,19 @@ public class RunInferenceYOLO : MonoBehaviour
         }
         displayImage.texture = inputImage[selectedImage];
         
-        if (inferenceBackend == "CPU")
-        {
-            engine = WorkerFactory.CreateWorker(BackendType.CPU, model);
-        } 
-        else if (inferenceBackend == "GPUCompute")
-        {
-            engine = WorkerFactory.CreateWorker(BackendType.GPUCompute, model);
-        } 
-        else if (inferenceBackend == "PixelShader")
-        {
-            engine = WorkerFactory.CreateWorker(BackendType.GPUPixel, model);
-        }
+
 
         //preprocess image for input
         using var input = TextureConverter.ToTensor(inputImage[imageID], inputImage[imageID].width, inputImage[imageID].height, 3);
         engine.Execute(input);
-        
-        //read output tensors
-        var output20 = engine.PeekOutput("016_convolutional") as TensorFloat; //016_convolutional = original output tensor name for 20x20 boundingBoxes
-        var output40 = engine.PeekOutput("023_convolutional") as TensorFloat; ; //023_convolutional = original output tensor name for 40x40 boundingBoxes
 
+        //read output tensors
+
+        //Output tensor name for 20x20 boundingBoxes:
+        var output20 = engine.PeekOutput("016_convolutional") as TensorFloat;
+
+        //Output tensor name for 40x40 boundingBoxes
+        var output40 = engine.PeekOutput("023_convolutional") as TensorFloat;
 
         //this list is used to store the original model output data
         List<Box> outputBoxList = new List<Box>();
@@ -124,10 +139,13 @@ public class RunInferenceYOLO : MonoBehaviour
             DrawBox(pixelBoxList[i]);
         }
 
+        
+
         //clean memory
         input.Dispose();
-        engine.Dispose();
-        Resources.UnloadUnusedAssets();
+        //Resources.UnloadUnusedAssets();
+
+        Debug.Log("DoneML=" + watch.ElapsedMilliseconds / 1000f);
     }
 
     public void AddBackendOptions()
@@ -156,6 +174,7 @@ public class RunInferenceYOLO : MonoBehaviour
         {
             inferenceBackend = "PixelShader";
         }
+        SetupEngine();
         ExecuteML(selectedImage);
     }
 

@@ -1,0 +1,5 @@
+* Face-tracking uses Compute shaders - can we change them to Sentis operators?
+* YOLO
+
+
+ALL: Don't need to dispose engine each time! Only create engine at start and when change.
