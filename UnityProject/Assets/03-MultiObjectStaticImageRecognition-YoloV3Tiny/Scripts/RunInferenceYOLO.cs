@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
-using Unity.Barracuda;
+using Unity.Sentis;
 using UnityEngine;
 using UnityEngine.UI;
 using Object = System.Object;
@@ -11,7 +11,7 @@ public class RunInferenceYOLO : MonoBehaviour
     public Texture2D[] inputImage;
     public int selectedImage = 0;
     public RawImage displayImage;
-    public NNModel srcModel;
+    public ModelAsset srcModel;
     public TextAsset labelsAsset;
     public Dropdown backendDropdown;
     public Transform displayLocation;
@@ -24,7 +24,7 @@ public class RunInferenceYOLO : MonoBehaviour
     private Dictionary<string, Tensor> inputs = new Dictionary<string, Tensor>();
     private string[] labels;
     private RenderTexture targetRT;
-    private string inferenceBackend = "CSharpBurst";
+    private string inferenceBackend = "GPUCompute";
     private const int amountOfClasses = 80;
     private const int box20Sections = 20;
     private const int box40Sections = 40;
@@ -82,33 +82,35 @@ public class RunInferenceYOLO : MonoBehaviour
         
         if (inferenceBackend == "CSharpBurst")
         {
-            engine = WorkerFactory.CreateWorker(WorkerFactory.Type.CSharpBurst, model);
+            engine = WorkerFactory.CreateWorker(BackendType.CPU, model);
         } 
-        else if (inferenceBackend == "ComputePrecompiled")
+        else if (inferenceBackend == "GPUCompute")
         {
-            engine = WorkerFactory.CreateWorker(WorkerFactory.Type.ComputePrecompiled, model);
+            engine = WorkerFactory.CreateWorker(BackendType.GPUCompute, model);
         } 
         else if (inferenceBackend == "PixelShader")
         {
-            engine = WorkerFactory.CreateWorker(WorkerFactory.Type.PixelShader, model);
+            engine = WorkerFactory.CreateWorker(BackendType.GPUPixel, model);
         }
-        
+
         //preprocess image for input
-        var input = new Tensor((inputImage[imageID]), 3);
+        //var input = new TensorFloat((inputImage[imageID]), 3);
+        using var input = TextureConverter.ToTensor(inputImage[imageID], inputImage[imageID].width, inputImage[imageID].height, 3);
+        Debug.Log(input.shape);
         engine.Execute(input);
         
         //read output tensors
-        var output20 = engine.PeekOutput("016_convolutional"); //016_convolutional = original output tensor name for 20x20 boundingBoxes
-        var output40 = engine.PeekOutput("023_convolutional"); //023_convolutional = original output tensor name for 40x40 boundingBoxes
+        var output20 = engine.PeekOutput("016_convolutional") as TensorFloat; //016_convolutional = original output tensor name for 20x20 boundingBoxes
+        var output40 = engine.PeekOutput("023_convolutional") as TensorFloat; ; //023_convolutional = original output tensor name for 40x40 boundingBoxes
 
         //this list is used to store the original model output data
         List<Box> outputBoxList = new List<Box>();
         
         //this list is used to store the values converted to intuitive pixel data
         List<PixelBox> pixelBoxList = new List<PixelBox>();
-        
+
         //decode the output 
-        outputBoxList = DecodeOutput(output20,output40);
+        outputBoxList = DecodeOutput(output20, output40);
         
         //convert output to intuitive pixel data (x,y coords from the center of the image; height and width in pixels)
         pixelBoxList = ConvertBoxToPixelData(outputBoxList);
@@ -133,7 +135,7 @@ public class RunInferenceYOLO : MonoBehaviour
         List<string> options = new List<string> ();
         options.Add("CSharpBurst");
         #if !UNITY_WEBGL
-        options.Add("ComputePrecompiled");
+        options.Add("GPUCompute");
         #endif
         options.Add("PixelShader");
         backendDropdown.ClearOptions ();
@@ -146,9 +148,9 @@ public class RunInferenceYOLO : MonoBehaviour
         {
             inferenceBackend = "CSharpBurst";
         }
-        else if (backendDropdown.options[backendDropdown.value].text == "ComputePrecompiled")
+        else if (backendDropdown.options[backendDropdown.value].text == "GPUCompute")
         {
-            inferenceBackend = "ComputePrecompiled";
+            inferenceBackend = "GPUCompute";
         }
         else if (backendDropdown.options[backendDropdown.value].text == "PixelShader")
         {
@@ -157,7 +159,7 @@ public class RunInferenceYOLO : MonoBehaviour
         ExecuteML(selectedImage);
     }
 
-    public List<Box> DecodeOutput(Tensor output20, Tensor output40)
+    public List<Box> DecodeOutput(TensorFloat output20, TensorFloat output40)
     {
         List<Box> outputBoxList = new List<Box>();
         
@@ -168,7 +170,7 @@ public class RunInferenceYOLO : MonoBehaviour
         return outputBoxList;
     }
 
-    public List<Box> DecodeYolo(List<Box> outputBoxList, Tensor output, int boxSections, int anchorMask )
+    public List<Box> DecodeYolo(List<Box> outputBoxList, TensorFloat output, int boxSections, int anchorMask )
     {
         for (int boundingBoxX = 0; boundingBoxX < boxSections; boundingBoxX++)
         {
@@ -290,7 +292,7 @@ public class RunInferenceYOLO : MonoBehaviour
         GameObject panel = new GameObject("ObjectBox");
         panel.AddComponent<CanvasRenderer>();
         Image img = panel.AddComponent<Image>();
-        img.color = new Color(0,1,1,0.2f);
+        img.color = new Color(0, 1, 1, 0.2f);
         panel.transform.SetParent(displayLocation, false);
         panel.transform.localPosition = new Vector3(box.x, -box.y);
         RectTransform rt = panel.GetComponent<RectTransform>();

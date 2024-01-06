@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
-using Unity.Barracuda;
+using Unity.Sentis;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -12,21 +12,29 @@ public class RunInferenceMobileNet : MonoBehaviour
     public int inputResolutionY = 224;
     public int inputResolutionX = 224;
     public RawImage displayImage;
-    public NNModel srcModel;
+    public ModelAsset srcModel;
     public TextAsset labelsAsset;
     public Text resultClassText;
     public Material preprocessMaterial;
     public Dropdown backendDropdown;
     
     private string inferenceBackend = "CSharpBurst";
+    //"ComputePrecompiled";//
     private Model model;
     private IWorker engine;
     private Dictionary<string, Tensor> inputs = new Dictionary<string, Tensor>();
     private string[] labels;
     private RenderTexture targetRT;
 
+    static Ops ops;
+    ITensorAllocator allocator;
+
     void Start()
     {
+        allocator = new TensorCachingAllocator();
+        ops = WorkerFactory.CreateOps(Unity.Sentis.BackendType.GPUCompute, allocator);
+        Debug.Log("ops=" + ops);
+
         Application.targetFrameRate = 60;
         Screen.orientation = ScreenOrientation.LandscapeLeft;
         AddBackendOptions();
@@ -47,28 +55,31 @@ public class RunInferenceMobileNet : MonoBehaviour
         
         if (inferenceBackend == "CSharpBurst")
         {
-            engine = WorkerFactory.CreateWorker(WorkerFactory.Type.CSharpBurst, model);
+            engine = WorkerFactory.CreateWorker(BackendType.CPU, model);
         } 
         else if (inferenceBackend == "ComputePrecompiled")
         {
-            engine = WorkerFactory.CreateWorker(WorkerFactory.Type.ComputePrecompiled, model);
+            engine = WorkerFactory.CreateWorker(BackendType.GPUCompute, model);
         } 
         else if (inferenceBackend == "PixelShader")
         {
-            engine = WorkerFactory.CreateWorker(WorkerFactory.Type.PixelShader, model);
+            engine = WorkerFactory.CreateWorker(BackendType.GPUPixel, model);
         }
-        
+
         //preprocess image for input
-        var input = new Tensor(PrepareTextureForInput(inputImage[selectedImage]), 3);
+        var input =  TextureConverter.ToTensor(PrepareTextureForInput(inputImage[selectedImage]), 224, 224, 3);
         //execute neural net
         engine.Execute(input);
         //read output tensor
-        var output = engine.PeekOutput();
+        var output = engine.PeekOutput() as TensorFloat;
+        var argmax = ops.ArgMax(output, 1, false);
+        argmax.MakeReadable();
         //select the best output class and print the results
-        var res = output.ArgMax()[0];
+        var res = argmax[0];
         var label = labels[res];
+        output.MakeReadable();
         var accuracy = output[res];
-        resultClassText.text = $"{label} {Math.Round(accuracy*100, 1)}﹪";
+        resultClassText.text = $"{label} {Math.Round(accuracy*100f, 1)}﹪";
         //clean memory
         input.Dispose();
         engine.Dispose();
@@ -127,5 +138,8 @@ public class RunInferenceMobileNet : MonoBehaviour
         }
 		
         inputs.Clear();
+
+        ops?.Dispose();
+        allocator?.Dispose();
     }
 }
