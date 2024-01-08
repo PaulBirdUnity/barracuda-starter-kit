@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using UnityEngine.Android;
 using UnityEngine.Video;
 using UnityEngine.SceneManagement;
+using UnityEngine.UI;
 
 namespace MediaPipe.BlazeFace
 {
@@ -49,7 +50,9 @@ namespace MediaPipe.BlazeFace
         public UI.Dropdown _cameraDropdown;
         public UI.Dropdown _backendDropdown;
 
-        static Ops ops;
+        public Text FPSText;
+
+        Ops ops;
         ITensorAllocator allocator;
 
         Model _model;
@@ -145,7 +148,8 @@ namespace MediaPipe.BlazeFace
                         _video = gameObject.AddComponent<VideoPlayer>();//new VideoPlayer();
                         _video.renderMode = VideoRenderMode.APIOnly;
                         _video.source = VideoSource.Url;
-                        _video.url = Application.streamingAssetsPath + "/video2.mp4";
+                        _video.url = Application.streamingAssetsPath + "/chatting.mp4";// "/unite.mp4";
+                            //"/chatting.mp4";
                         _video.isLooping = true;
                         _video.Play();
                         break;
@@ -198,6 +202,12 @@ namespace MediaPipe.BlazeFace
                 SceneManager.LoadScene("Menu");
             }
 
+            if (Input.GetKeyDown(KeyCode.P))
+            {
+                _previewUI.enabled = !_previewUI.enabled;
+            }
+
+            FPSText.text = Mathf.FloorToInt(FPS.GetCurrentFPS() + 0.5f) + " FPS";
         }
 
 
@@ -428,9 +438,12 @@ namespace MediaPipe.BlazeFace
 
         void CleanUp()
         {
+            ops?.Dispose();
+            allocator?.Dispose();
             if (_webcam) Destroy(_webcam);
             if (_video) Destroy(_video);
-            Destroy(_buffer);
+            RenderTexture.active = null;
+            _buffer.Release();
             Dispose();
         }
 
