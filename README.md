@@ -1,4 +1,4 @@
-# Barracuda Starter Kit
+# Barracuda Starter Kit (Updated to work with Sentis)
 
 ![MobileNetV2](Documentation~/images/mobilenet.png)
 
