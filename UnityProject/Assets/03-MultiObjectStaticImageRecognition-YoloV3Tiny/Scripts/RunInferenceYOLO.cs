@@ -5,11 +5,11 @@ using Unity.Sentis;
 using UnityEngine;
 using UnityEngine.UI;
 using Object = System.Object;
-
+using UnityEngine.SceneManagement;
+using System.Threading.Tasks;
 public class RunInferenceYOLO : MonoBehaviour
 {
     public Texture2D[] inputImage;
-    public int selectedImage = 0;
     public RawImage displayImage;
     public ModelAsset srcModel;
     public TextAsset labelsAsset;
@@ -20,6 +20,7 @@ public class RunInferenceYOLO : MonoBehaviour
     public float iouThreshold = 0.45f;
     public Sprite boxTexture;
 
+    private int selectedImage = -1;
     private Model model;
     private IWorker engine;
     private Dictionary<string, Tensor> inputs = new Dictionary<string, Tensor>();
@@ -69,7 +70,8 @@ public class RunInferenceYOLO : MonoBehaviour
         //load model
         model = ModelLoader.Load(srcModel);
 
-        SelectBackendAndExecuteML();
+        SelectBackend();
+        ExecuteML(0);
     }
 
     System.Diagnostics.Stopwatch watch = new System.Diagnostics.Stopwatch();
@@ -88,6 +90,15 @@ public class RunInferenceYOLO : MonoBehaviour
         else if (inferenceBackend == "PixelShader")
         {
             engine = WorkerFactory.CreateWorker(BackendType.GPUPixel, model);
+        }
+    }
+
+    private void Update()
+    {
+        if (Input.GetKeyDown(KeyCode.Escape))
+        {
+            CleanUp();
+            SceneManager.LoadScene("Menu");
         }
     }
 
@@ -160,7 +171,7 @@ public class RunInferenceYOLO : MonoBehaviour
         backendDropdown.AddOptions(options);
     }
     
-    public void SelectBackendAndExecuteML()
+    public void SelectBackend()
     {
         if (backendDropdown.options[backendDropdown.value].text == "CPU")
         {
@@ -174,8 +185,8 @@ public class RunInferenceYOLO : MonoBehaviour
         {
             inferenceBackend = "PixelShader";
         }
+        
         SetupEngine();
-        ExecuteML(selectedImage);
     }
 
     public List<Box> DecodeOutput(TensorFloat output20, TensorFloat output40)
@@ -192,38 +203,42 @@ public class RunInferenceYOLO : MonoBehaviour
     public List<Box> DecodeYolo(List<Box> outputBoxList, TensorFloat output, int boxSections, int anchorMask )
     {
         output.MakeReadable();
-        for (int boundingBoxX = 0; boundingBoxX < boxSections; boundingBoxX++)
+
+        for (int anchor = 0; anchor < 3; anchor++)
         {
-            for (int boundingBoxY = 0; boundingBoxY < boxSections; boundingBoxY++)
+            int N = anchor * anchorBatchSize;
+            for (int x = 0; x < boxSections; x++)
             {
-                for (int anchor = 0; anchor < 3; anchor++)
+                for (int y = 0; y < boxSections; y++)
                 {
-                    if (output[0, anchor * anchorBatchSize + 4, boundingBoxX, boundingBoxY] > confidenceThreshold)
+                    if (output[0, N + 4, x, y] > confidenceThreshold)
                     {
-                        //identify the best class
+                        //Identify the best class
+                        //GetMaxIndex( output[0, N+5:N+5+amountOfClasses,x,y])
                         float bestValue = 0;
                         int bestIndex = 0;
                         for (int i = 0; i < amountOfClasses; i++)
                         {
-                            float value = output[0, anchor * anchorBatchSize + 5 + i, boundingBoxX, boundingBoxY];
-                            if (value > bestValue )
+                            float value = output[0, N + 5 + i, x, y];
+                            if (value > bestValue)
                             {
                                 bestValue = value;
                                 bestIndex = i;
                             }
                         }
-                        //Debug.Log(labels[bestIndex]);
-                        Box tempBox;
-                        tempBox.x = output[0, anchor * anchorBatchSize, boundingBoxX, boundingBoxY];
-                        tempBox.y = output[0, anchor * anchorBatchSize + 1, boundingBoxX, boundingBoxY];
-                        tempBox.width = output[0, anchor * anchorBatchSize + 2, boundingBoxX, boundingBoxY];
-                        tempBox.height = output[0, anchor * anchorBatchSize + 3, boundingBoxX, boundingBoxY];
-                        tempBox.label = labels[bestIndex];
-                        tempBox.anchorIndex = anchor + anchorMask;
-                        tempBox.cellIndexY = boundingBoxX;
-                        tempBox.cellIndexX = boundingBoxY;
+
+                        var tempBox = new Box
+                        {
+                            x = output[0, N, x, y],
+                            y = output[0, N + 1, x, y],
+                            width = output[0, N + 2, x, y],
+                            height = output[0, N + 3, x, y],
+                            label = labels[bestIndex],
+                            anchorIndex = anchor + anchorMask,
+                            cellIndexY = x,
+                            cellIndexX = y
+                        };
                         outputBoxList.Add(tempBox);
-                        
                     }
                 }
             }
@@ -332,7 +347,7 @@ public class RunInferenceYOLO : MonoBehaviour
         Text txt = text.AddComponent<Text>();
         text.transform.SetParent(panel.transform, false);
         txt.text = box.label;
-        txt.color = color;// new Color(1,0,0,1);
+        txt.color = color;
         txt.fontSize = 40;
         txt.font = font;
         txt.horizontalOverflow = HorizontalWrapMode.Overflow;
@@ -355,7 +370,7 @@ public class RunInferenceYOLO : MonoBehaviour
         }
     }
 
-    private void OnDestroy()
+    void CleanUp()
     {
         engine?.Dispose();
 
@@ -363,7 +378,12 @@ public class RunInferenceYOLO : MonoBehaviour
         {
             inputs[key].Dispose();
         }
-		
+
         inputs.Clear();
+    }
+
+    private void OnDestroy()
+    {
+        CleanUp();
     }
 }

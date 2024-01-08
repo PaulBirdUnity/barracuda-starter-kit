@@ -4,6 +4,8 @@ using System.Collections.Generic;
 using Unity.Sentis;
 using System.Runtime.InteropServices;
 using UnityEngine.Android;
+using UnityEngine.Video;
+using UnityEngine.SceneManagement;
 
 namespace MediaPipe.BlazeFace
 {
@@ -14,9 +16,12 @@ namespace MediaPipe.BlazeFace
         [SerializeField] Vector2Int _resolution = new Vector2Int(1080, 1080);
 
         WebCamTexture _webcam;
+        VideoPlayer _video;
+        
         RenderTexture _buffer;
 
-        bool _useWebcam = !true;
+        enum InputType { Image, Video, Webcam};
+        InputType _inputType = InputType.Video;
 
         public Texture2D _testFace;
 
@@ -48,6 +53,9 @@ namespace MediaPipe.BlazeFace
         ITensorAllocator allocator;
 
         Model _model;
+
+
+        bool closing = false;
 
         //
         // Detection structure. The layout of this structure must be matched with
@@ -99,19 +107,9 @@ namespace MediaPipe.BlazeFace
 #if UNITY_WEBGL
             webglWarning.SetActive(true);
 #endif
+            _buffer = new RenderTexture(_resolution.x, _resolution.y, 0);
 
-            if (_useWebcam)
-            {
-                _webcam = new WebCamTexture(_deviceName, _resolution.x, _resolution.y);
-                _webcam.requestedFPS = 30;
-                _webcam.Play();
-                _buffer = new RenderTexture(_resolution.x, _resolution.y, 0);
-            }
-            else
-            {
-                _buffer = new RenderTexture(_resolution.x, _resolution.y, 0);
-                Graphics.Blit(_testFace, _buffer);
-            }
+            SetupInput();
 
             Screen.orientation = ScreenOrientation.LandscapeLeft;
 
@@ -130,9 +128,39 @@ namespace MediaPipe.BlazeFace
             if (_image != null) runInference(_image);
         }
 
+        void SetupInput()
+        {
+            switch (_inputType)
+            {
+
+                case InputType.Webcam:
+                    {
+                        _webcam = new WebCamTexture(_deviceName, _resolution.x, _resolution.y);
+                        _webcam.requestedFPS = 30;
+                        _webcam.Play();
+                        break;
+                    }
+                case InputType.Video:
+                    {
+                        _video = gameObject.AddComponent<VideoPlayer>();//new VideoPlayer();
+                        _video.renderMode = VideoRenderMode.APIOnly;
+                        _video.source = VideoSource.Url;
+                        _video.url = Application.streamingAssetsPath + "/video2.mp4";
+                        _video.isLooping = true;
+                        _video.Play();
+                        break;
+                    }
+                default:
+                    {
+                        Graphics.Blit(_testFace, _buffer);
+                    }
+                    break;
+            }
+        }
+
         void Update()
         {
-            if (_useWebcam)
+            if (_inputType==InputType.Webcam)
             {
                 // Format video inpout
                 if (!_webcam.didUpdateThisFrame) return;
@@ -147,23 +175,53 @@ namespace MediaPipe.BlazeFace
 
                 Graphics.Blit(_webcam, _buffer, scale, offset);
             }
+            if (_inputType == InputType.Video)
+            {
+                var aspect1 = (float)_video.width / _video.height;
+                var aspect2 = (float)_resolution.x / _resolution.y;
+                var gap = aspect2 / aspect1;
+
+                var vflip = false;
+                var scale = new Vector2(gap, vflip ? -1 : 1);
+                var offset = new Vector2((1 - gap) / 2, vflip ? 1 : 0);
+                Graphics.Blit(_video.texture, _buffer, scale, offset);
+            }
+            if (_inputType == InputType.Image)
+            {
+                Graphics.Blit(_testFace, _buffer);
+            }
+
+            if (Input.GetKeyDown(KeyCode.Escape))
+            {
+                closing = true;
+                CleanUp();
+                SceneManager.LoadScene("Menu");
+            }
 
         }
+
+
         void LateUpdate()
         {
             // Webcam test: Run the detector every frame.
-            runInference(_buffer);
+            if (!closing)
+            {
+                runInference(_buffer);
+            }
         }
 
         public void AddCameraOptions()
         {
             List<string> options = new List<string>();
+            options.Add("Image");
+            options.Add("Video");
             foreach (var option in WebCamTexture.devices)
             {
                 options.Add(option.name);
             }
             _cameraDropdown.ClearOptions();
             _cameraDropdown.AddOptions(options);
+            _cameraDropdown.value = Mathf.Min((int)_inputType, options.Count - 1);
         }
 
         public void AddBackendOptions()
@@ -180,10 +238,31 @@ namespace MediaPipe.BlazeFace
 
         public void SwapCamera()
         {
-            if (_useWebcam)
+            if (_webcam)
             {
                 _webcam.Stop();
-                _webcam.deviceName = _cameraDropdown.options[_cameraDropdown.value].text;
+                Destroy(_webcam);
+            }
+            if (_video)
+            {
+                _video.Stop();
+                Destroy(_video);
+            }
+            if(_cameraDropdown.value ==0)
+            {
+                _inputType = InputType.Image;
+                SetupInput();
+            }
+            if (_cameraDropdown.value == 1)
+            {
+                _inputType = InputType.Video;
+                SetupInput();
+            }
+            if (_cameraDropdown.value>=2)
+            {
+                _inputType = InputType.Webcam;
+                SetupInput();
+                _webcam.deviceName = _cameraDropdown.options[_cameraDropdown.value-2].text;
                 _webcam.Play();
             }
         }
@@ -347,11 +426,17 @@ namespace MediaPipe.BlazeFace
             return _post2ReadCache;
         }
 
-        void OnDestroy()
+        void CleanUp()
         {
-            if(_useWebcam) Destroy(_webcam);
+            if (_webcam) Destroy(_webcam);
+            if (_video) Destroy(_video);
             Destroy(_buffer);
             Dispose();
+        }
+
+        void OnDestroy()
+        {
+            CleanUp();
         }
 
         public void Dispose()

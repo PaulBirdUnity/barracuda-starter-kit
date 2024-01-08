@@ -8,10 +8,13 @@ EditorBuildSettings:
   - enabled: 1
     path: Assets/01-StaticImageRecognition-MobileNetV2/01-StaticImageRecognition-MobileNetV2.unity
     guid: f7098788fb77c4e39988e28c915a6897
-  - enabled: 0
+  - enabled: 1
     path: Assets/02-FaceTracking-BlazeFace/02-FaceTracking-BlazeFace.unity
     guid: 96aacd413c7c37f4e9df399114082954
-  - enabled: 0
+  - enabled: 1
     path: Assets/03-MultiObjectStaticImageRecognition-YoloV3Tiny/03-MultiObjectStaticImageRecognition-YoloV3Tiny.unity
     guid: 9c3f3ab6fcc0d4e8395859b09bf8535d
+  - enabled: 1
+    path: Assets/Menu.unity
+    guid: cc96f2472f69b3547b31a90eb91ba5f3
   m_configObjects: {}

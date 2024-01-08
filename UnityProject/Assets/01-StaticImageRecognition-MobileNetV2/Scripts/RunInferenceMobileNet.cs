@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using Unity.Sentis;
 using UnityEngine;
 using UnityEngine.UI;
+using UnityEngine.SceneManagement;
 
 public class RunInferenceMobileNet : MonoBehaviour
 {
@@ -63,6 +64,15 @@ public class RunInferenceMobileNet : MonoBehaviour
         {
             engine = WorkerFactory.CreateWorker(BackendType.GPUPixel, model);
             ops = WorkerFactory.CreateOps(BackendType.GPUPixel, allocator);
+        }
+    }
+
+    private void Update()
+    {
+        if (Input.GetKeyDown(KeyCode.Escape))
+        {
+            CleanUp();
+            SceneManager.LoadScene("Menu");
         }
     }
 
@@ -133,8 +143,8 @@ public class RunInferenceMobileNet : MonoBehaviour
         SetupEngine();
         ExecuteML(selectedImage);
     }
-    
-    private void OnDestroy()
+
+    void CleanUp()
     {
         engine?.Dispose();
 
@@ -142,10 +152,15 @@ public class RunInferenceMobileNet : MonoBehaviour
         {
             inputs[key]?.Dispose();
         }
-		
+
         inputs.Clear();
 
         ops?.Dispose();
         allocator?.Dispose();
+    }
+    
+    private void OnDestroy()
+    {
+        CleanUp();
     }
 }
