@@ -1,9 +1,10 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
-using Unity.Barracuda;
+using Unity.Sentis;
 using UnityEngine;
 using UnityEngine.UI;
+using UnityEngine.SceneManagement;
 
 public class RunInferenceMobileNet : MonoBehaviour
 {
@@ -12,21 +13,25 @@ public class RunInferenceMobileNet : MonoBehaviour
     public int inputResolutionY = 224;
     public int inputResolutionX = 224;
     public RawImage displayImage;
-    public NNModel srcModel;
+    public ModelAsset srcModel;
     public TextAsset labelsAsset;
     public Text resultClassText;
-    public Material preprocessMaterial;
     public Dropdown backendDropdown;
     
-    private string inferenceBackend = "CSharpBurst";
+    private string inferenceBackend = "GPUCompute";
     private Model model;
     private IWorker engine;
     private Dictionary<string, Tensor> inputs = new Dictionary<string, Tensor>();
     private string[] labels;
     private RenderTexture targetRT;
 
+    static Ops ops;
+    ITensorAllocator allocator;
+
     void Start()
     {
+        allocator = new TensorCachingAllocator();
+
         Application.targetFrameRate = 60;
         Screen.orientation = ScreenOrientation.LandscapeLeft;
         AddBackendOptions();
@@ -40,59 +45,80 @@ public class RunInferenceMobileNet : MonoBehaviour
         SelectBackendAndExecuteML();
     }
 
+    void SetupEngine()
+    {
+        ops?.Dispose();
+        engine?.Dispose();
+
+        if (inferenceBackend == "CPU")
+        {
+            engine = WorkerFactory.CreateWorker(BackendType.CPU, model);
+            ops = WorkerFactory.CreateOps(BackendType.CPU, allocator);
+        }
+        else if (inferenceBackend == "GPUCompute")
+        {
+            engine = WorkerFactory.CreateWorker(BackendType.GPUCompute, model);
+            ops = WorkerFactory.CreateOps(BackendType.GPUCompute, allocator);
+        }
+        else if (inferenceBackend == "PixelShader")
+        {
+            engine = WorkerFactory.CreateWorker(BackendType.GPUPixel, model);
+            ops = WorkerFactory.CreateOps(BackendType.GPUPixel, allocator);
+        }
+    }
+
+    private void Update()
+    {
+        if (Input.GetKeyDown(KeyCode.Escape))
+        {
+            CleanUp();
+            SceneManager.LoadScene("Menu");
+        }
+    }
+
     public void ExecuteML(int imageID)
     {
         selectedImage = imageID;
         displayImage.texture = inputImage[selectedImage];
-        
-        if (inferenceBackend == "CSharpBurst")
-        {
-            engine = WorkerFactory.CreateWorker(WorkerFactory.Type.CSharpBurst, model);
-        } 
-        else if (inferenceBackend == "ComputePrecompiled")
-        {
-            engine = WorkerFactory.CreateWorker(WorkerFactory.Type.ComputePrecompiled, model);
-        } 
-        else if (inferenceBackend == "PixelShader")
-        {
-            engine = WorkerFactory.CreateWorker(WorkerFactory.Type.PixelShader, model);
-        }
-        
+
         //preprocess image for input
-        var input = new Tensor(PrepareTextureForInput(inputImage[selectedImage]), 3);
+        using var input0 = TextureConverter.ToTensor(inputImage[selectedImage], 224, 224, 3);
+        using var input = Normalise(input0);
         //execute neural net
         engine.Execute(input);
         //read output tensor
-        var output = engine.PeekOutput();
+        var output = engine.PeekOutput() as TensorFloat;
+        var argmax = ops.ArgMax(output, 1, false);
+        argmax.MakeReadable();
         //select the best output class and print the results
-        var res = output.ArgMax()[0];
+        var res = argmax[0];
         var label = labels[res];
+        output.MakeReadable();
         var accuracy = output[res];
-        resultClassText.text = $"{label} {Math.Round(accuracy*100, 1)}﹪";
+        resultClassText.text = $"{label} {Math.Round(accuracy*100f, 1)}﹪";
         //clean memory
-        input.Dispose();
-        engine.Dispose();
         Resources.UnloadUnusedAssets();
     }
 
-    Texture PrepareTextureForInput(Texture2D src)
+    TensorFloat Normalise(TensorFloat image)
     {
-        RenderTexture.active = targetRT;
-        //normalization is applied in the NormalizeInput shader
-        Graphics.Blit(src, targetRT, preprocessMaterial);
-
-        var  result = new Texture2D(targetRT.width, targetRT.height, TextureFormat.RGBAHalf, false);
-        result.ReadPixels(new Rect(0,0, targetRT.width, targetRT.height), 0, 0);
-        result.Apply();
-        return result;
+        using var M = new TensorFloat(new TensorShape(1, 3, 1, 1), new float[]
+        {
+           1/0.229f, 1/0.224f, 1/0.225f
+        });
+        using var P = new TensorFloat(new TensorShape(1, 3, 1, 1), new float[]
+        {
+            0.485f, 0.456f, 0.406f
+        });
+        using var image2 = ops.Sub(image, P);
+        return ops.Mul(image2, M);
     }
-
     public void AddBackendOptions()
     {
         List<string> options = new List<string> ();
-        options.Add("CSharpBurst");
+        options.Add("CPU");
         #if !UNITY_WEBGL
-        options.Add("ComputePrecompiled");
+        options.Add("GPUCompute");
         #endif
         options.Add("PixelShader");
         backendDropdown.ClearOptions ();
@@ -102,30 +128,39 @@ public class RunInferenceMobileNet : MonoBehaviour
     public void SelectBackendAndExecuteML()
     {
         
-        if (backendDropdown.options[backendDropdown.value].text == "CSharpBurst")
+        if (backendDropdown.options[backendDropdown.value].text == "CPU")
         {
-            inferenceBackend = "CSharpBurst";
+            inferenceBackend = "CPU";
         }
-        else if (backendDropdown.options[backendDropdown.value].text == "ComputePrecompiled")
+        else if (backendDropdown.options[backendDropdown.value].text == "GPUCompute")
         {
-            inferenceBackend = "ComputePrecompiled";
+            inferenceBackend = "GPUCompute";
         }
         else if (backendDropdown.options[backendDropdown.value].text == "PixelShader")
         {
             inferenceBackend = "PixelShader";
         }
+        SetupEngine();
         ExecuteML(selectedImage);
     }
-    
-    private void OnDestroy()
+
+    void CleanUp()
     {
         engine?.Dispose();
 
         foreach (var key in inputs.Keys)
         {
-            inputs[key].Dispose();
+            inputs[key]?.Dispose();
         }
-		
+
         inputs.Clear();
+
+        ops?.Dispose();
+        allocator?.Dispose();
+    }
+    
+    private void OnDestroy()
+    {
+        CleanUp();
     }
 }

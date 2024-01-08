@@ -1,30 +1,32 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
-using Unity.Barracuda;
+using Unity.Sentis;
 using UnityEngine;
 using UnityEngine.UI;
 using Object = System.Object;
-
+using UnityEngine.SceneManagement;
+using System.Threading.Tasks;
 public class RunInferenceYOLO : MonoBehaviour
 {
     public Texture2D[] inputImage;
-    public int selectedImage = 0;
     public RawImage displayImage;
-    public NNModel srcModel;
+    public ModelAsset srcModel;
     public TextAsset labelsAsset;
     public Dropdown backendDropdown;
     public Transform displayLocation;
     public Font font;
     public float confidenceThreshold = 0.25f;
     public float iouThreshold = 0.45f;
+    public Sprite boxTexture;
 
+    private int selectedImage = -1;
     private Model model;
     private IWorker engine;
     private Dictionary<string, Tensor> inputs = new Dictionary<string, Tensor>();
     private string[] labels;
     private RenderTexture targetRT;
-    private string inferenceBackend = "CSharpBurst";
+    private string inferenceBackend = "GPUCompute";
     private const int amountOfClasses = 80;
     private const int box20Sections = 20;
     private const int box40Sections = 40;
@@ -67,11 +69,44 @@ public class RunInferenceYOLO : MonoBehaviour
         labels = labelsAsset.text.Split('\n');
         //load model
         model = ModelLoader.Load(srcModel);
-        SelectBackendAndExecuteML();
+
+        SelectBackend();
+        ExecuteML(0);
     }
+
+    System.Diagnostics.Stopwatch watch = new System.Diagnostics.Stopwatch();
+
+    void SetupEngine()
+    {
+        engine?.Dispose();
+        if (inferenceBackend == "CPU")
+        {
+            engine = WorkerFactory.CreateWorker(BackendType.CPU, model);
+        }
+        else if (inferenceBackend == "GPUCompute")
+        {
+            engine = WorkerFactory.CreateWorker(BackendType.GPUCompute, model);
+        }
+        else if (inferenceBackend == "PixelShader")
+        {
+            engine = WorkerFactory.CreateWorker(BackendType.GPUPixel, model);
+        }
+    }
+
+    private void Update()
+    {
+        if (Input.GetKeyDown(KeyCode.Escape))
+        {
+            CleanUp();
+            SceneManager.LoadScene("Menu");
+        }
+    }
+
 
     public void ExecuteML(int imageID)
     {
+        if (imageID == selectedImage) return; //could cause a bug if toggled on sent first
+        watch.Reset(); watch.Start();
         ClearAnnotations();
         selectedImage = imageID;
         if (inputImage[selectedImage].width != 640 || inputImage[selectedImage].height != 640)
@@ -80,35 +115,28 @@ public class RunInferenceYOLO : MonoBehaviour
         }
         displayImage.texture = inputImage[selectedImage];
         
-        if (inferenceBackend == "CSharpBurst")
-        {
-            engine = WorkerFactory.CreateWorker(WorkerFactory.Type.CSharpBurst, model);
-        } 
-        else if (inferenceBackend == "ComputePrecompiled")
-        {
-            engine = WorkerFactory.CreateWorker(WorkerFactory.Type.ComputePrecompiled, model);
-        } 
-        else if (inferenceBackend == "PixelShader")
-        {
-            engine = WorkerFactory.CreateWorker(WorkerFactory.Type.PixelShader, model);
-        }
-        
+
+
         //preprocess image for input
-        var input = new Tensor((inputImage[imageID]), 3);
+        using var input = TextureConverter.ToTensor(inputImage[imageID], inputImage[imageID].width, inputImage[imageID].height, 3);
         engine.Execute(input);
-        
+
         //read output tensors
-        var output20 = engine.PeekOutput("016_convolutional"); //016_convolutional = original output tensor name for 20x20 boundingBoxes
-        var output40 = engine.PeekOutput("023_convolutional"); //023_convolutional = original output tensor name for 40x40 boundingBoxes
+
+        //Output tensor name for 20x20 boundingBoxes:
+        var output20 = engine.PeekOutput("016_convolutional") as TensorFloat;
+
+        //Output tensor name for 40x40 boundingBoxes
+        var output40 = engine.PeekOutput("023_convolutional") as TensorFloat;
 
         //this list is used to store the original model output data
         List<Box> outputBoxList = new List<Box>();
         
         //this list is used to store the values converted to intuitive pixel data
         List<PixelBox> pixelBoxList = new List<PixelBox>();
-        
+
         //decode the output 
-        outputBoxList = DecodeOutput(output20,output40);
+        outputBoxList = DecodeOutput(output20, output40);
         
         //convert output to intuitive pixel data (x,y coords from the center of the image; height and width in pixels)
         pixelBoxList = ConvertBoxToPixelData(outputBoxList);
@@ -122,42 +150,46 @@ public class RunInferenceYOLO : MonoBehaviour
             DrawBox(pixelBoxList[i]);
         }
 
+        
+
         //clean memory
         input.Dispose();
-        engine.Dispose();
-        Resources.UnloadUnusedAssets();
+        //Resources.UnloadUnusedAssets();
+
+        Debug.Log("DoneML=" + watch.ElapsedMilliseconds / 1000f);
     }
 
     public void AddBackendOptions()
     {
         List<string> options = new List<string> ();
-        options.Add("CSharpBurst");
+        options.Add("CPU");
         #if !UNITY_WEBGL
-        options.Add("ComputePrecompiled");
+        options.Add("GPUCompute");
         #endif
         options.Add("PixelShader");
         backendDropdown.ClearOptions ();
         backendDropdown.AddOptions(options);
     }
     
-    public void SelectBackendAndExecuteML()
+    public void SelectBackend()
     {
-        if (backendDropdown.options[backendDropdown.value].text == "CSharpBurst")
+        if (backendDropdown.options[backendDropdown.value].text == "CPU")
         {
-            inferenceBackend = "CSharpBurst";
+            inferenceBackend = "CPU";
         }
-        else if (backendDropdown.options[backendDropdown.value].text == "ComputePrecompiled")
+        else if (backendDropdown.options[backendDropdown.value].text == "GPUCompute")
         {
-            inferenceBackend = "ComputePrecompiled";
+            inferenceBackend = "GPUCompute";
         }
         else if (backendDropdown.options[backendDropdown.value].text == "PixelShader")
         {
             inferenceBackend = "PixelShader";
         }
-        ExecuteML(selectedImage);
+        
+        SetupEngine();
     }
 
-    public List<Box> DecodeOutput(Tensor output20, Tensor output40)
+    public List<Box> DecodeOutput(TensorFloat output20, TensorFloat output40)
     {
         List<Box> outputBoxList = new List<Box>();
         
@@ -168,40 +200,45 @@ public class RunInferenceYOLO : MonoBehaviour
         return outputBoxList;
     }
 
-    public List<Box> DecodeYolo(List<Box> outputBoxList, Tensor output, int boxSections, int anchorMask )
+    public List<Box> DecodeYolo(List<Box> outputBoxList, TensorFloat output, int boxSections, int anchorMask )
     {
-        for (int boundingBoxX = 0; boundingBoxX < boxSections; boundingBoxX++)
+        output.MakeReadable();
+
+        for (int anchor = 0; anchor < 3; anchor++)
         {
-            for (int boundingBoxY = 0; boundingBoxY < boxSections; boundingBoxY++)
+            int N = anchor * anchorBatchSize;
+            for (int x = 0; x < boxSections; x++)
             {
-                for (int anchor = 0; anchor < 3; anchor++)
+                for (int y = 0; y < boxSections; y++)
                 {
-                    if (output[0, boundingBoxX, boundingBoxY, anchor * anchorBatchSize + 4] > confidenceThreshold)
+                    if (output[0, N + 4, x, y] > confidenceThreshold)
                     {
-                        //identify the best class
+                        //Identify the best class
+                        //GetMaxIndex( output[0, N+5:N+5+amountOfClasses,x,y])
                         float bestValue = 0;
                         int bestIndex = 0;
                         for (int i = 0; i < amountOfClasses; i++)
                         {
-                            float value = output[0, boundingBoxX, boundingBoxY, anchor * anchorBatchSize + 5 + i];
-                            if (value > bestValue )
+                            float value = output[0, N + 5 + i, x, y];
+                            if (value > bestValue)
                             {
                                 bestValue = value;
                                 bestIndex = i;
                             }
                         }
-                        //Debug.Log(labels[bestIndex]);
-                        Box tempBox;
-                        tempBox.x = output[0, boundingBoxX, boundingBoxY, anchor * anchorBatchSize];
-                        tempBox.y = output[0, boundingBoxX, boundingBoxY, anchor * anchorBatchSize + 1];
-                        tempBox.width = output[0, boundingBoxX, boundingBoxY, anchor * anchorBatchSize + 2];
-                        tempBox.height = output[0, boundingBoxX, boundingBoxY, anchor * anchorBatchSize + 3];
-                        tempBox.label = labels[bestIndex];
-                        tempBox.anchorIndex = anchor + anchorMask;
-                        tempBox.cellIndexY = boundingBoxX;
-                        tempBox.cellIndexX = boundingBoxY;
+
+                        var tempBox = new Box
+                        {
+                            x = output[0, N, x, y],
+                            y = output[0, N + 1, x, y],
+                            width = output[0, N + 2, x, y],
+                            height = output[0, N + 3, x, y],
+                            label = labels[bestIndex],
+                            anchorIndex = anchor + anchorMask,
+                            cellIndexY = x,
+                            cellIndexX = y
+                        };
                         outputBoxList.Add(tempBox);
-                        
                     }
                 }
             }
@@ -283,16 +320,24 @@ public class RunInferenceYOLO : MonoBehaviour
     public float Sigmoid(float value) {
         return 1.0f / (1.0f + (float) Math.Exp(-value));
     }
-    
+
+    int N = 0;
     public void DrawBox(PixelBox box)
     {
+        N++;
+        Color color = Color.HSVToRGB((N * 0.618f) % 1f, 1f, 1f);
         //add bounding box
         GameObject panel = new GameObject("ObjectBox");
         panel.AddComponent<CanvasRenderer>();
         Image img = panel.AddComponent<Image>();
-        img.color = new Color(0,1,1,0.2f);
+        img.color = color;//new Color(0, 1, 1, 1f);
+        img.sprite  = boxTexture;
+        
+
         panel.transform.SetParent(displayLocation, false);
         panel.transform.localPosition = new Vector3(box.x, -box.y);
+
+
         RectTransform rt = panel.GetComponent<RectTransform>();
         rt.sizeDelta = new Vector2(box.width, box.height);
 
@@ -302,17 +347,20 @@ public class RunInferenceYOLO : MonoBehaviour
         Text txt = text.AddComponent<Text>();
         text.transform.SetParent(panel.transform, false);
         txt.text = box.label;
-        txt.color = new Color(1,0,0,1);
+        txt.color = color;
         txt.fontSize = 40;
         txt.font = font;
         txt.horizontalOverflow = HorizontalWrapMode.Overflow;
         RectTransform rt2 = text.GetComponent<RectTransform>();
         rt2.offsetMin = new Vector2(20, rt2.offsetMin.y);
         rt2.offsetMax = new Vector2(0, rt2.offsetMax.y);
-        rt2.offsetMax = new Vector2(rt2.offsetMax.x, 0);
+        rt2.offsetMax = new Vector2(rt2.offsetMax.x, 30);
         rt2.offsetMin = new Vector2(rt2.offsetMin.x, 0);
         rt2.anchorMin = new Vector2(0,0);
         rt2.anchorMax = new Vector2(1, 1);
+
+        img.sprite = boxTexture;
+        img.type = Image.Type.Sliced;
     }
 
     public void ClearAnnotations()
@@ -322,7 +370,7 @@ public class RunInferenceYOLO : MonoBehaviour
         }
     }
 
-    private void OnDestroy()
+    void CleanUp()
     {
         engine?.Dispose();
 
@@ -330,7 +378,12 @@ public class RunInferenceYOLO : MonoBehaviour
         {
             inputs[key].Dispose();
         }
-		
+
         inputs.Clear();
+    }
+
+    private void OnDestroy()
+    {
+        CleanUp();
     }
 }
