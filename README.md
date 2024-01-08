@@ -18,4 +18,4 @@ YOLOv3-tiny [pjreddie.com](https://pjreddie.com/darknet/yolo/) example running i
 
 ## Unity
 
-This project requires Unity 2019.4.29f1 or later.
+This project requires Unity 2021 or later.
