@@ -7,6 +7,8 @@ using UnityEngine.UI;
 using Object = System.Object;
 using UnityEngine.SceneManagement;
 using System.Threading.Tasks;
+using UnityEngine.Video;
+
 public class RunInferenceYOLO : MonoBehaviour
 {
     public Texture2D[] inputImage;
@@ -19,6 +21,10 @@ public class RunInferenceYOLO : MonoBehaviour
     public float confidenceThreshold = 0.25f;
     public float iouThreshold = 0.45f;
     public Sprite boxTexture;
+    public Text FPStext;
+
+    enum InputType { Image, Video, Webcam };
+    InputType inputType = InputType.Video;
 
     private int selectedImage = -1;
     private Model model;
@@ -36,7 +42,7 @@ public class RunInferenceYOLO : MonoBehaviour
     //model output returns box scales relative to the anchor boxes, 3 are used for 40x40 outputs and other 3 for 20x20 outputs,
     //each cell has 3 boxes 3x85=255
     private readonly float[] anchors = {10,14, 23,27, 37,58, 81,82, 135,169, 344,319};
-
+    private VideoPlayer video;
     //box struct with the original output data
     public struct Box
     {
@@ -64,14 +70,27 @@ public class RunInferenceYOLO : MonoBehaviour
     {
         Application.targetFrameRate = 60;
         Screen.orientation = ScreenOrientation.LandscapeLeft;
-        AddBackendOptions();
+        
         //parse neural net labels
         labels = labelsAsset.text.Split('\n');
         //load model
         model = ModelLoader.Load(srcModel);
 
+        targetRT = new RenderTexture(640, 640, 0);
+        AddBackendOptions();
         SelectBackend();
+
+        SetupInput();
         ExecuteML(0);
+    }
+    void SetupInput()
+    {
+        video = gameObject.AddComponent<VideoPlayer>();
+        video.renderMode = VideoRenderMode.APIOnly;
+        video.source = VideoSource.Url;
+        video.url = Application.streamingAssetsPath + "/giraffes.mp4";
+        video.isLooping = true;
+        video.Play();
     }
 
     System.Diagnostics.Stopwatch watch = new System.Diagnostics.Stopwatch();
@@ -95,17 +114,25 @@ public class RunInferenceYOLO : MonoBehaviour
 
     private void Update()
     {
+        N = 0;
+        if(inputType == InputType.Video)
+        {
+            ExecuteML(0);
+            FPStext.text = Mathf.FloorToInt(FPS.GetCurrentFPS()+0.5f) + " FPS";
+        }
+
         if (Input.GetKeyDown(KeyCode.Escape))
         {
             CleanUp();
             SceneManager.LoadScene("Menu");
+            return;
         }
     }
 
 
     public void ExecuteML(int imageID)
     {
-        if (imageID == selectedImage) return; //could cause a bug if toggled on sent first
+        if (inputType == InputType.Image && imageID == selectedImage) return; //could cause a bug if toggled on sent first
         watch.Reset(); watch.Start();
         ClearAnnotations();
         selectedImage = imageID;
@@ -114,11 +141,23 @@ public class RunInferenceYOLO : MonoBehaviour
             Debug.LogError("Image resolution must be 640x640. Make sure Texture Import Settings are similar to the example images");
         }
         displayImage.texture = inputImage[selectedImage];
-        
+
+        Texture texture = inputImage[imageID];
+        if (video && video.texture)
+        {
+            float aspect = video.width*1f / video.height;
+            Graphics.Blit(video.texture, targetRT, new Vector2(1f/aspect, 1), new Vector2(0, 0));
+            texture = targetRT;// video.texture;
+            displayImage.texture = texture;
+        }
+        else
+        {
+            return;
+        }
 
 
         //preprocess image for input
-        using var input = TextureConverter.ToTensor(inputImage[imageID], inputImage[imageID].width, inputImage[imageID].height, 3);
+        using var input = TextureConverter.ToTensor(texture, 640, 640, 3);
         engine.Execute(input);
 
         //read output tensors
@@ -156,7 +195,8 @@ public class RunInferenceYOLO : MonoBehaviour
         input.Dispose();
         //Resources.UnloadUnusedAssets();
 
-        Debug.Log("DoneML=" + watch.ElapsedMilliseconds / 1000f);
+        FPStext.text = $"Time taken {watch.ElapsedMilliseconds} ms";
+        //Debug.Log("DoneML=" + watch.ElapsedMilliseconds / 1000f);
     }
 
     public void AddBackendOptions()
@@ -169,6 +209,7 @@ public class RunInferenceYOLO : MonoBehaviour
         options.Add("PixelShader");
         backendDropdown.ClearOptions ();
         backendDropdown.AddOptions(options);
+        backendDropdown.value = 1;
     }
     
     public void SelectBackend()
@@ -325,7 +366,7 @@ public class RunInferenceYOLO : MonoBehaviour
     public void DrawBox(PixelBox box)
     {
         N++;
-        Color color = Color.HSVToRGB((N * 0.618f) % 1f, 1f, 1f);
+        Color color = Color.yellow;// Color.HSVToRGB((N * 0.618f) % 1f, 1f, 1f);
         //add bounding box
         GameObject panel = new GameObject("ObjectBox");
         panel.AddComponent<CanvasRenderer>();
